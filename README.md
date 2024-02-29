@@ -15,7 +15,7 @@
 ```
 # windows
 # 安装 ffmpeg
-python python .\scripts\win_install_ffmpeg.py # 以管理员权限运行
+python .\scripts\win_install_ffmpeg.py # 以管理员权限运行
 # 运行代码
 git submodule update --recursive --init
 pip install -r requirements.txt
