@@ -1,2 +1,4 @@
 model/
 *.json
+output.txt
+output.wav

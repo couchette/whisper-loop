@@ -1,5 +1,7 @@
 openai-whisper
 pyaudio
+webrtcvad
+
+# dev
 tqdm
 matplotlib
-webrtcvad

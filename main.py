@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import wave
 import math
 import webrtcvad
+import queue
 
 
 class WhisperModelCard:
@@ -36,8 +37,10 @@ class WhisperModelCard:
 class WisperLoop:
     def __init__(self) -> None:
         self.start_time = time.time()
-        self.is_listening = True
+        self.is_listening = False
+        self.threads = []
         self.cache_speech = []
+        self.wait_process_frames_queue = queue.Queue()
         self.cache_frames = []
         self.speech = ""
         self.time_speed_last_recognization = 0.01
@@ -47,6 +50,9 @@ class WisperLoop:
         pass
 
     def __del__(self):
+        self.is_listening = False
+        for t in self.threads:
+            t.join()
         if self.recorder:
             self.close_recorder()
 
@@ -58,7 +64,7 @@ class WisperLoop:
     def init_speech_recognization_model(self):
         whisper_model_card = WhisperModelCard()
         self.model = whisper_model_card.model
-        self.cache_dur = 3  # whisper_model_card.sliding_dur
+        self.cache_dur = whisper_model_card.sliding_dur
         self.cache_chunk_num = math.ceil(self.cache_dur / self.time_speed_each_chunk)
         print("Model loading completed.")
 
@@ -89,10 +95,6 @@ class WisperLoop:
         self.p.terminate()
         print("Audio record closed.")
 
-    def wave_read(self):
-        while True:
-            yield self.recorder.read(self.chunk)
-
     def save_wave(self, frames, wave_output_filename="output.wav"):
         wf = wave.open(wave_output_filename, "wb")
         wf.setnchannels(self.channel)
@@ -101,24 +103,44 @@ class WisperLoop:
         wf.writeframes(b"".join(frames))
         wf.close()
 
-    def run(self):
+    def audio_record_worker(self):
+        print("Audio record worker start.")
+        while self.is_listening:
+            wave_data = self.recorder.read(self.chunk)
+            self.wait_process_frames_queue.put(wave_data)
+            # is_speech = self.__vad.is_speech(wave_data, sample_rate=self.frame_rate)
+            # if is_speech:
+            #     print("有声音活动")
+            # else:
+            #     print("没有声音活动")
+        print("Audio record worker end.")
+
+    def start_audio_record_thread(self):
         self.start_recorder()
+        self.is_listening = True
+        t = threading.Thread(target=self.audio_record_worker)
+        self.threads.append(t)
+        t.setDaemon(True)
+        t.start()
+
+    def run(self):
+        self.start_audio_record_thread()
         chunks_count = 0
         while True:
             chunks_num = math.ceil(
                 self.time_speed_last_recognization / self.time_speed_each_chunk
             )
-            for index, wave_data in enumerate(self.wave_read()):
-                print(len(wave_data))
-                is_speech = self.__vad.is_speech(wave_data, sample_rate=self.frame_rate)
-                if is_speech:
-                    print("有声音活动")
-                else:
-                    print("没有声音活动")
+            i = 0
+            while True:
+                wave_data = self.wait_process_frames_queue.get()
+                if not wave_data:
+                    print(wave_data)
                 self.cache_frames.append(wave_data)
                 chunks_count += 1
-                if index >= chunks_num:
+                i += 1
+                if i >= chunks_num:
                     break
+
             # speech recogization
             start_time_speech_recognization = time.time()
             cache_frames_np = [
@@ -139,18 +161,18 @@ class WisperLoop:
                 time.time() - start_time_speech_recognization
             )
             self.cache_speech.append(result.text)
-            print(f"\n recog: {self.cache_speech[-1]}\n")
+            print(f"recog: {self.cache_speech[-1]}")
 
             if chunks_count >= self.cache_chunk_num:
                 chunks_count = 0
                 self.speech += self.cache_speech[-1]
+                self.is_listening = False
                 self.save_wave(frames=self.cache_frames)
-                with open("speech.txt", "w", encoding="utf-8") as f:
+                with open("output.txt", "w", encoding="utf-8") as f:
                     f.write(self.speech)
                 self.cache_frames = []
                 self.cache_speech = []
                 break
-
         self.close_recorder()
 
 
