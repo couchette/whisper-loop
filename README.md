@@ -6,9 +6,6 @@
 
 项目功能为使用pyaudio实时录音并使用whisper语音识别
 
-![](./pics/1.png)
-
-
 
 ## Usage
 
