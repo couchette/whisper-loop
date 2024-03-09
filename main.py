@@ -16,12 +16,12 @@ class WisperLoop:
         self.start_time = time.time()
         self.is_listening = False
         self.threads = []
-        self.cache_speech = []
+        self.cache_sentence = ""
         self.wait_process_frames_queue = queue.Queue()
         self.cache_frames = []
         self.cache_frames_status = []
-        self.pause_chunks_num_threshold = 5
-        self.speech_content = ""
+        self.pause_chunks_num_threshold = 3
+        self.sentences = []
         self.time_speed_last_recognization = 0.01
         self.chunks_count = 0
         self.init_vad()
@@ -39,7 +39,7 @@ class WisperLoop:
 
     def init_vad(self):
         self.__vad = webrtcvad.Vad()
-        self.__vad.set_mode(1)
+        self.__vad.set_mode(2)
 
     def init_text_compiler(self):
         self.__text_compiler = TextCompiler()
@@ -113,6 +113,7 @@ class WisperLoop:
         mel = whisper.log_mel_spectrogram(audio).to(self.model.device)
         options = whisper.DecodingOptions(fp16=False)
         result = whisper.decode(self.model, mel, options)
+        # lang = result.language
         return result
 
     def is_need_recognization(self):
@@ -136,14 +137,15 @@ class WisperLoop:
 
     def __process_cache(self, is_pause=False):
         self.chunks_count = 0
-        self.speech_content += self.cache_speech[-1]
+        self.sentences.append(self.cache_sentence)
         if is_pause:
-            self.speech_content += self.pause_flag
-        # self.save_wave(frames=self.cache_frames)
-        # with open("output.txt", "w", encoding="utf-8") as f:
-        #     f.write(self.speech_content)
+            self.sentences[-1] += self.pause_flag
+        self.save_wave(frames=self.cache_frames)
+        print(f"{self.sentences[-1]}".replace("#", "\n"), end="")
+        with open("output.txt", "w", encoding="utf-8") as f:
+            f.write("".join(self.sentences))
         self.cache_frames = []
-        self.cache_speech = []
+        self.cache_sentence = ""
 
     def run(self, imshow=False):
         self.start_audio_record_thread()
@@ -185,8 +187,7 @@ class WisperLoop:
                 # speech recogization
                 start_time_speech_recognization = time.time()
                 result = self.__speech_recognize(frames=self.cache_frames)
-                self.cache_speech.append(result.text)
-                print(f"recog: {self.cache_speech[-1]}")
+                self.cache_sentence = result.text
                 self.time_speed_last_recognization = (
                     time.time() - start_time_speech_recognization
                 )
