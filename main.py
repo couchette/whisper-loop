@@ -22,8 +22,8 @@ class WisperLoop:
         self.cache_frames_status = []
         self.pause_chunks_num_threshold = 3
         self.sentences = []
-        self.time_speed_last_recognization = 0.01
-        self.chunks_count = 0
+        self.cache_chunks_count = 0
+        self.total_chunks_count = 0
         self.init_vad()
         self.init_text_compiler()
         self.init_recorder()
@@ -135,8 +135,13 @@ class WisperLoop:
             )
         return is_need_pause
 
+    def __clear_cache(self):
+        self.cache_chunks_count = 0
+        self.cache_frames = []
+        self.cache_frames_status = []
+        self.cache_sentence = ""
+
     def __process_cache(self, is_pause=False):
-        self.chunks_count = 0
         self.sentences.append(self.cache_sentence)
         if is_pause:
             self.sentences[-1] += self.pause_flag
@@ -144,21 +149,28 @@ class WisperLoop:
         print(f"{self.sentences[-1]}".replace("#", "\n"), end="")
         with open("output.txt", "w", encoding="utf-8") as f:
             f.write("".join(self.sentences))
-        self.cache_frames = []
-        self.cache_sentence = ""
 
     def run(self, imshow=False):
         self.start_audio_record_thread()
-        self.chunks_count = 0
+        self.cache_chunks_count = 0
+        init_chunks_num = 35
+
+        # The first {init_chunks_num} chunks generate invalid data for sound card initialization
+        while True:
+            wave_data = self.wait_process_frames_queue.get()
+            self.total_chunks_count += 1
+            if self.total_chunks_count > init_chunks_num:
+                self.total_chunks_count = 0
+                # Due to the long duration of the first run of speech recognition, this is the first run
+                self.__speech_recognize([wave_data])
+                break
+
+        print("Please speak up")
 
         while True:
-            chunks_num = math.ceil(
-                self.time_speed_last_recognization / self.time_speed_each_chunk
-            )
-            i = 0
             while True:
                 wave_data = self.wait_process_frames_queue.get()
-                #
+                self.total_chunks_count += 1
                 is_speech = self.__vad.is_speech(wave_data, sample_rate=self.frame_rate)
                 self.cache_frames.append(wave_data)
                 self.cache_frames_status.append({"is_speech": is_speech})
@@ -169,8 +181,8 @@ class WisperLoop:
                     )
                     plt.plot(
                         np.linspace(
-                            len(wave_data_np) * self.chunks_count,
-                            len(wave_data_np) * (self.chunks_count + 1),
+                            len(wave_data_np) * self.total_chunks_count,
+                            len(wave_data_np) * (self.total_chunks_count + 1),
                             len(wave_data_np),
                         ),
                         wave_data_np,
@@ -178,24 +190,20 @@ class WisperLoop:
                     )
                     plt.pause(0.01)
 
-                self.chunks_count += 1
-                i += 1
-                if i >= chunks_num:
+                self.cache_chunks_count += 1
+                if self.cache_chunks_count >= self.cache_chunk_num:
+                    break
+                if self.is_need_pause():
                     break
 
             if self.is_need_recognization():
-                # speech recogization
-                start_time_speech_recognization = time.time()
                 result = self.__speech_recognize(frames=self.cache_frames)
                 self.cache_sentence = result.text
-                self.time_speed_last_recognization = (
-                    time.time() - start_time_speech_recognization
-                )
-            if self.is_need_pause():
-                self.__process_cache(is_pause=True)
-
-            if self.chunks_count >= self.cache_chunk_num:
-                self.__process_cache()
+                if self.is_need_pause():
+                    self.__process_cache(is_pause=True)
+                else:
+                    self.__process_cache()
+            self.__clear_cache()
         self.close_recorder()
 
 
