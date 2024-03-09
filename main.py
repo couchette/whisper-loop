@@ -1,37 +1,14 @@
 import whisper
 import pyaudio
 import numpy as np
-from tqdm import tqdm
 from debug.instrumentor import *
 import matplotlib.pyplot as plt
 import wave
 import math
 import webrtcvad
 import queue
-
-
-class WhisperModelCard:
-    def __init__(self):
-        self.__sliding_dur = 30
-        self.__model = whisper.load_model("tiny", download_root="./model")
-        # self.__model = whisper.load_model("tiny.en", download_root="./model")
-        # self.__model = whisper.load_model("base", download_root="./model")
-        # self.__model = whisper.load_model("base.en", download_root="./model")
-        # self.__model = whisper.load_model("small", download_root="./model")
-        # self.__model = whisper.load_model("small.en", download_root="./model")
-        # self.__model = whisper.load_model("medium", download_root="./model")
-        # self.__model = whisper.load_model("medium.en", download_root="./model")
-        # self.__model = whisper.load_model("large", download_root="./model")
-        # self.__model = whisper.load_model("large-v1", download_root="./model")
-        # self.__model = whisper.load_model("large-v2", download_root="./model")
-
-    @property
-    def model(self):
-        return self.__model
-
-    @property
-    def sliding_dur(self):
-        return self.__sliding_dur
+from core.model_card import WhisperModelCard
+from core.text_compiler import TextCompiler
 
 
 class WisperLoop:
@@ -42,9 +19,13 @@ class WisperLoop:
         self.cache_speech = []
         self.wait_process_frames_queue = queue.Queue()
         self.cache_frames = []
-        self.speech = ""
+        self.cache_frames_status = []
+        self.pause_chunks_num_threshold = 5
+        self.speech_content = ""
         self.time_speed_last_recognization = 0.01
+        self.chunks_count = 0
         self.init_vad()
+        self.init_text_compiler()
         self.init_recorder()
         self.init_speech_recognization_model()
         pass
@@ -59,6 +40,10 @@ class WisperLoop:
     def init_vad(self):
         self.__vad = webrtcvad.Vad()
         self.__vad.set_mode(1)
+
+    def init_text_compiler(self):
+        self.__text_compiler = TextCompiler()
+        self.pause_flag = self.__text_compiler.pause_flag
 
     @PROFILE_FUNCTION
     def init_speech_recognization_model(self):
@@ -118,9 +103,52 @@ class WisperLoop:
         t.setDaemon(True)
         t.start()
 
+    def __speech_recognize(self, frames):
+        frames_np = [
+            np.frombuffer(x, np.int16).flatten().astype(np.float32) for x in frames
+        ]
+
+        audio = np.concatenate(frames_np, axis=0) / 32768.0
+        audio = whisper.pad_or_trim(audio)
+        mel = whisper.log_mel_spectrogram(audio).to(self.model.device)
+        options = whisper.DecodingOptions(fp16=False)
+        result = whisper.decode(self.model, mel, options)
+        return result
+
+    def is_need_recognization(self):
+        is_need_recognization = False
+        for frame_status in self.cache_frames_status:
+            is_need_recognization = is_need_recognization or frame_status.get(
+                "is_speech"
+            )
+        return is_need_recognization
+
+    def is_need_pause(self):
+        if len(self.cache_frames) < self.pause_chunks_num_threshold:
+            return False
+        is_need_pause = True
+        for i in range(self.pause_chunks_num_threshold):
+            index = -i - 1
+            is_need_pause = is_need_pause and (
+                not self.cache_frames_status[index].get("is_speech")
+            )
+        return is_need_pause
+
+    def __process_cache(self, is_pause=False):
+        self.chunks_count = 0
+        self.speech_content += self.cache_speech[-1]
+        if is_pause:
+            self.speech_content += self.pause_flag
+        # self.save_wave(frames=self.cache_frames)
+        # with open("output.txt", "w", encoding="utf-8") as f:
+        #     f.write(self.speech_content)
+        self.cache_frames = []
+        self.cache_speech = []
+
     def run(self, imshow=False):
         self.start_audio_record_thread()
-        chunks_count = 0
+        self.chunks_count = 0
+
         while True:
             chunks_num = math.ceil(
                 self.time_speed_last_recognization / self.time_speed_each_chunk
@@ -128,22 +156,19 @@ class WisperLoop:
             i = 0
             while True:
                 wave_data = self.wait_process_frames_queue.get()
+                #
+                is_speech = self.__vad.is_speech(wave_data, sample_rate=self.frame_rate)
                 self.cache_frames.append(wave_data)
+                self.cache_frames_status.append({"is_speech": is_speech})
+
                 if imshow:
-                    is_speech = self.__vad.is_speech(
-                        wave_data, sample_rate=self.frame_rate
-                    )
-                    if is_speech:
-                        print("有声音活动")
-                    else:
-                        print("没有声音活动")
                     wave_data_np = (
                         np.frombuffer(wave_data, np.int16).flatten().astype(np.float32)
                     )
                     plt.plot(
                         np.linspace(
-                            len(wave_data_np) * chunks_count,
-                            len(wave_data_np) * (chunks_count + 1),
+                            len(wave_data_np) * self.chunks_count,
+                            len(wave_data_np) * (self.chunks_count + 1),
                             len(wave_data_np),
                         ),
                         wave_data_np,
@@ -151,43 +176,25 @@ class WisperLoop:
                     )
                     plt.pause(0.01)
 
-                chunks_count += 1
+                self.chunks_count += 1
                 i += 1
                 if i >= chunks_num:
                     break
 
-            # speech recogization
-            start_time_speech_recognization = time.time()
-            cache_frames_np = [
-                np.frombuffer(x, np.int16).flatten().astype(np.float32)
-                for x in self.cache_frames
-            ]
+            if self.is_need_recognization():
+                # speech recogization
+                start_time_speech_recognization = time.time()
+                result = self.__speech_recognize(frames=self.cache_frames)
+                self.cache_speech.append(result.text)
+                print(f"recog: {self.cache_speech[-1]}")
+                self.time_speed_last_recognization = (
+                    time.time() - start_time_speech_recognization
+                )
+            if self.is_need_pause():
+                self.__process_cache(is_pause=True)
 
-            audio = np.concatenate(cache_frames_np, axis=0) / 32768.0
-            # plt.plot(np.linspace(0, len(audio), len(audio)), audio)
-            # plt.pause(0.01)
-            audio = whisper.pad_or_trim(audio)
-            # plt.plot(np.linspace(0, len(audio), len(audio)), audio)
-            # plt.pause(0.01)
-            mel = whisper.log_mel_spectrogram(audio).to(self.model.device)
-            options = whisper.DecodingOptions(fp16=False)
-            result = whisper.decode(self.model, mel, options)
-            self.time_speed_last_recognization = (
-                time.time() - start_time_speech_recognization
-            )
-            self.cache_speech.append(result.text)
-            print(f"recog: {self.cache_speech[-1]}")
-
-            if chunks_count >= self.cache_chunk_num:
-                chunks_count = 0
-                self.speech += self.cache_speech[-1]
-                self.is_listening = False
-                self.save_wave(frames=self.cache_frames)
-                with open("output.txt", "w", encoding="utf-8") as f:
-                    f.write(self.speech)
-                self.cache_frames = []
-                self.cache_speech = []
-                break
+            if self.chunks_count >= self.cache_chunk_num:
+                self.__process_cache()
         self.close_recorder()
 
 

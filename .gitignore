@@ -2,3 +2,4 @@ model/
 *.json
 output.txt
 output.wav
+__pycache__/
