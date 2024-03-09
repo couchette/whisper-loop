@@ -12,8 +12,8 @@ from core.text_compiler import TextCompiler
 
 
 class WisperLoop:
-    def __init__(self) -> None:
-        self.start_time = time.time()
+    def __init__(self, lang=None) -> None:
+        self.lang = lang
         self.is_listening = False
         self.threads = []
         self.cache_sentence = ""
@@ -113,7 +113,6 @@ class WisperLoop:
         mel = whisper.log_mel_spectrogram(audio).to(self.model.device)
         options = whisper.DecodingOptions(fp16=False)
         result = whisper.decode(self.model, mel, options)
-        # lang = result.language
         return result
 
     def is_need_recognization(self):
@@ -140,6 +139,12 @@ class WisperLoop:
         self.cache_frames = []
         self.cache_frames_status = []
         self.cache_sentence = ""
+
+    def __filter_recog_result(self, result):
+        if self.lang:
+            if not result.language == self.lang:
+                return None
+        return result
 
     def __process_cache(self, is_pause=False):
         self.sentences.append(self.cache_sentence)
@@ -197,12 +202,15 @@ class WisperLoop:
                     break
 
             if self.is_need_recognization():
-                result = self.__speech_recognize(frames=self.cache_frames)
-                self.cache_sentence = result.text
-                if self.is_need_pause():
-                    self.__process_cache(is_pause=True)
-                else:
-                    self.__process_cache()
+                result = self.__filter_recog_result(
+                    self.__speech_recognize(frames=self.cache_frames)
+                )
+                if result:
+                    self.cache_sentence = result.text
+                    if self.is_need_pause():
+                        self.__process_cache(is_pause=True)
+                    else:
+                        self.__process_cache()
             self.__clear_cache()
         self.close_recorder()
 
