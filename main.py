@@ -58,7 +58,7 @@ class WisperLoop:
 
     def init_vad(self):
         self.__vad = webrtcvad.Vad()
-        self.__vad.set_mode(3)
+        self.__vad.set_mode(1)
 
     @PROFILE_FUNCTION
     def init_speech_recognization_model(self):
@@ -108,11 +108,6 @@ class WisperLoop:
         while self.is_listening:
             wave_data = self.recorder.read(self.chunk)
             self.wait_process_frames_queue.put(wave_data)
-            # is_speech = self.__vad.is_speech(wave_data, sample_rate=self.frame_rate)
-            # if is_speech:
-            #     print("有声音活动")
-            # else:
-            #     print("没有声音活动")
         print("Audio record worker end.")
 
     def start_audio_record_thread(self):
@@ -123,7 +118,7 @@ class WisperLoop:
         t.setDaemon(True)
         t.start()
 
-    def run(self):
+    def run(self, imshow=False):
         self.start_audio_record_thread()
         chunks_count = 0
         while True:
@@ -133,9 +128,29 @@ class WisperLoop:
             i = 0
             while True:
                 wave_data = self.wait_process_frames_queue.get()
-                if not wave_data:
-                    print(wave_data)
                 self.cache_frames.append(wave_data)
+                if imshow:
+                    is_speech = self.__vad.is_speech(
+                        wave_data, sample_rate=self.frame_rate
+                    )
+                    if is_speech:
+                        print("有声音活动")
+                    else:
+                        print("没有声音活动")
+                    wave_data_np = (
+                        np.frombuffer(wave_data, np.int16).flatten().astype(np.float32)
+                    )
+                    plt.plot(
+                        np.linspace(
+                            len(wave_data_np) * chunks_count,
+                            len(wave_data_np) * (chunks_count + 1),
+                            len(wave_data_np),
+                        ),
+                        wave_data_np,
+                        color="green" if is_speech else "grey",
+                    )
+                    plt.pause(0.01)
+
                 chunks_count += 1
                 i += 1
                 if i >= chunks_num:
